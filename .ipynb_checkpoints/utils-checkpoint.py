@@ -200,7 +200,7 @@ class WsiNpySequence(keras.utils.Sequence):
         batch = self.get_batch(idx)
         return batch
 
-
+            
 
 def run_TC_one_slide(wsi, mask_pt, TC, temp, patch_size=128, foreground_thes=0.7):
     mask_arr = np.array(Image.open(mask_pt))
@@ -210,6 +210,7 @@ def run_TC_one_slide(wsi, mask_pt, TC, temp, patch_size=128, foreground_thes=0.7
     time1 = time.time()
     si = SlideIterator(wsi=wsi, image_level=0, mask_path=mask_path, threshold_mask=foreground_thes)
     patch_size, _ = parse_patch_size(wsi, patch_size)
+    
     si.save_array(patch_size=patch_size, stride=patch_size, output_pattern=temp, downsample=1)
     print(f"{time.time() - time1} seconds to vectorise the slide!")
     print(f"Tissue-Classifier is predicting ...")
