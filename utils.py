@@ -399,7 +399,7 @@ def save_patchcsv(roi_ids, patch_size, TC_maskpt, output_dir):
     patch_df["cohort"] = os.path.basename(output_dir)
     patch_df["wsi_id"] = os.path.basename(output_dir)
 
-    patch_csv = f"{output_dir}/{wsi_id}_patch.csv"
+    patch_csv = f"{output_dir}/{os.path.basename(output_dir)}_patch.csv"
     patch_df.to_csv(patch_csv, index=False)
     print(f"{patch_csv} saved!")
 
@@ -434,5 +434,64 @@ def show_patch(wsi, patch_id):
 
 
 
+
+# def generate_mask(wsi_path=None, anno_pt=None):
+#     slide=openslide.OpenSlide(wsi_path)
+#     with open(anno_pt, "r") as f:
+#         shapes = json.load(f)
+    
+#     level = slide.level_count - 1
+#     scale_factor = 1/slide.level_downsamples[level]
+#     width, height = slide.level_dimensions[level]
+    
+#     background = np.zeros((height, width, 3), np.uint8)
+#     mask = np.full((height, width, 3), background, dtype=np.uint8)
+    
+#     for shape in shapes["features"]:
+#         points = shape["geometry"]["coordinates"][0]
+#         points = np.array([(p[0], p[1]) for p in points])
+#         points = points * scale_factor
+#         points = points.astype(int)
+    
+#         cls = shape["properties"]["classification"]["name"]
+#         if cls == "epithelials":
+#           color = (255, 0, 0)
+#           mask = cv2.drawContours(mask, [points], -1, color=color, thickness=1)
+#           mask = cv2.fillPoly(mask, [points], color=color)
+#         elif cls == "stroma":
+#           color = (0, 255, 0)
+#           mask = cv2.drawContours(mask, [points], -1, color=color, thickness=1)
+#           mask = cv2.fillPoly(mask, [points], color=color)
+#         elif cls == "miscellaneous":
+#           color = (0, 0, 255)
+#           mask = cv2.drawContours(mask, [points], -1, color=color, thickness=1)
+#           mask = cv2.fillPoly(mask, [points], color=color)
+        
+#     return mask
+    
+
+
+# def generate_coords(wsi_path=wsi_path, mask_path=mask_npy, crop_size=512):
+#     slide = openslide.OpenSlide(wsi_path)
+#     mask = np.load(mask_npy, allow_pickle=True)
+
+#     Y_slide, X_slide = slide.level_dimensions[0]
+#     print(X_slide, Y_slide)
+#     x_mask, y_mask = mask.shape
+#     print(x_mask, y_mask)
+
+#     resolution = X_slide // x_mask
+#     print(resolution)
+#     rate = crop_size / resolution
+#     print(rate)
+
+#     x_cors, y_cors = list(map(lambda x: x//rate, np.where(mask!=0)))
+#     coords = list(set(zip(x_cors,y_cors)))
+
+#     fname = save_path + wsi_name+ "_coords.npy"
+#     np.save(fname, coords)
+#     print(f"{fname} saved! {len(coords)} patches")
+    
+#     return coords
 
 

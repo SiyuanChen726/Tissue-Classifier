@@ -7,7 +7,7 @@ import cv2
 import openslide
 from PIL import Image
 import matplotlib.pyplot as plt
-from utils.preprocessing import parse_patch_size,process_TCmask,bbx_overlay,get_roi_ids,get_patch_dict,roi_id2patch_id
+from utils import parse_patch_size,process_TCmask,bbx_overlay,get_roi_ids,roi_id2patch_id,save_patchcsv
 
 
 
@@ -20,9 +20,14 @@ def run_bbx(args):
         except:
             f"TC mask for {wsi_id} does not exists!"
             continue
-            
-        wsi_pt = glob.glob(f"{args.WSI}/{wsi_id}*.*")[0] 
-        wsi = openslide.OpenSlide(wsi_pt)
+
+        try:
+            wsi_pt = glob.glob(f"{args.WSI}/{wsi_id}*.*")[0] 
+            wsi = openslide.OpenSlide(wsi_pt)
+        except:
+            f"fail to load WSI {wsi_id}!"
+            continue
+        
         patch_size, _ = parse_patch_size(wsi, patch_size=args.patch_size)
             
         # get epithelium mask
@@ -36,8 +41,10 @@ def run_bbx(args):
                 print(f"{overlay_pt} saved!")
 
         if args.save_patchcsv:
-            roi_ids = get_roi_ids(epi_mask, wsi_id, roi_width, upsample, wsi_mask_ratio)
-            save_patchcsv(roi_ids, patch_size, TC_maskpt, output_dir)
+            patch_csv = f"{output_dir}/{os.path.basename(output_dir)}_patch.csv"
+            if not os.path.exists(patch_csv):
+                roi_ids = get_roi_ids(epi_mask, wsi_id, roi_width, args.upsample, wsi_mask_ratio)
+                save_patchcsv(roi_ids, patch_size, TC_maskpt, output_dir)
         
 
 

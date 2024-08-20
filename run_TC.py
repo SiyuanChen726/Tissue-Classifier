@@ -7,7 +7,7 @@ import openslide
 from utils import get_wsiname, Reinhard, SlideIterator, get_TC, WsiNpySequence, parse_patch_size
 
 
-def runTC(args):
+def run_TC(args):
     foreground_masks = glob.glob(f"{args.MASK}/*/*_mask_use.png")
     # foreground_masks = [i for i in foreground_masks if " HE" not in i]
     # foreground_masks = [i for i in foreground_masks if "_FPE_" not in i]
