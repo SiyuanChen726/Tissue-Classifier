@@ -2,17 +2,25 @@ import os
 import cv2
 import csv
 import glob
+import json
 import time
+import random
 import shutil
 import numpy as np
 import pandas as pd
+from typing import Tuple, Optional, List, Union
 
 import openslide
 import staintools
+from PIL import Image
+import matplotlib.pyplot as plt
+from matplotlib import cm
+from matplotlib.colors import ListedColormap, Colormap
 from skimage import morphology
 import matplotlib.pyplot as plt
 from PIL import Image
 Image.MAX_IMAGE_PIXELS = 1000000000
+
 
 
 # Tensorflow Dependencies
@@ -58,6 +66,39 @@ def Reinhard(img_arr):
     return img_transformed
 
 
+
+def Macenko(img_arr):
+    standard_img = "/scratch/prj/cb_histology_data/Siyuan/he_shg_synth_workflow/thumbnails/he.jpg"
+    # the standard_img was downloaded from https://github.com/uw-loci/he_shg_synth_workflow/tree/v0.1.0
+    target = staintools.read_image(standard_img)
+    target = staintools.LuminosityStandardizer.standardize(target)
+   
+    normalizer = staintools.StainNormalizer(method='macenko')
+    normalizer.fit(target)  # This fits the normalizer to the target image (optional)
+    
+    img_to_transform = staintools.LuminosityStandardizer.standardize(img_arr)
+    img_transformed = normalizer.transform(img_to_transform)
+    
+    return img_transformed
+
+
+
+
+def Vahadane(img_arr):
+    standard_img = "/scratch/prj/cb_histology_data/Siyuan/he_shg_synth_workflow/thumbnails/he.jpg"
+    # the standard_img was downloaded from https://github.com/uw-loci/he_shg_synth_workflow/tree/v0.1.0
+    target = staintools.read_image(standard_img)
+    target = staintools.LuminosityStandardizer.standardize(target)
+    img_to_transform = staintools.LuminosityStandardizer.standardize(img_arr)
+
+    normalizer = staintools.StainNormalizer(method='vahadane')
+    normalizer.fit(target)  # This fits the normalizer to the target image (optional)
+    img_transformed = normalizer.transform(img_to_transform)
+    
+    return img_transformed
+
+
+
 # get TC model
 def get_TC(weights):
     IMAGE_SIZE = (512,512)
@@ -74,6 +115,25 @@ def get_TC(weights):
     net_final.load_weights(weights)
     return net_final
     
+
+
+def get_TC1024():
+    weights = '/scratch/prj/cb_normalbreast/Siyuan/prj_normal/BreastAgeNet/ckpts/TC_1024px.h5'
+    IMAGE_SIZE = (1024,1024)
+    NUM_CLASSES = 3
+    initializer = tf.keras.initializers.GlorotNormal()
+    net = MobileNet(include_top=False, input_tensor=None,input_shape=(IMAGE_SIZE[0],IMAGE_SIZE[1],3))
+    x = net.output
+    x = GlobalAveragePooling2D()(x)
+    x = Dense(1024, activation='relu', name = 'Dense_1', kernel_initializer=initializer)(x)
+    x = Dropout(0.5)(x)
+    x = Dense(512, activation='relu', name = 'Dense_2', kernel_initializer=initializer)(x)
+    output_layer = Dense(NUM_CLASSES, activation='softmax', name='Predictions')(x)
+    net_final = Model(inputs=net.input, outputs=output_layer,trainable=False)
+    net_final.load_weights(weights)
+    return net_final
+    
+
 
 
 # yield patches from WSI as inputs for TC
@@ -202,19 +262,53 @@ class WsiNpySequence(keras.utils.Sequence):
 
             
 
-def run_TC_one_slide(wsi, mask_pt, TC, temp, patch_size=128, foreground_thes=0.7):
+
+def get_TC_predictions(wsi_pt, mask_path, args):
+    wsi=openslide.OpenSlide(wsi_pt)
+    print(f"vectorise {wsiname}")
+            
+    output_pattern = os.path.join(output_dir, f"{wsiname}_pattern")
+    time1 = time.time()
+    si = SlideIterator(wsi=wsi, image_level=0, mask_path=mask_path, threshold_mask=args.foreground_thes)
+    
+    patch_size, _ = parse_patch_size(wsi, args.patch_size)
+            
+    si.save_array(patch_size=patch_size, stride=patch_size, output_pattern=output_pattern, downsample=1)
+    print(f"{time.time() - time1} seconds to vectorise {wsiname}!")
+            
+    print(f"Tissue-Classifier is predicting {wsiname}")
+    tissue_classifier=get_TC(args.WEIGHT)
+    wsi_sequence = WsiNpySequence(wsi_pattern=output_pattern, batch_size=8)
+    tc_predictions = tissue_classifier.predict_generator(generator=wsi_sequence, steps=len(wsi_sequence),verbose=1)
+    
+    xs = wsi_sequence.xs
+    ys = wsi_sequence.ys
+    image_shape = wsi_sequence.image_shape
+    tissue_map = np.ones((image_shape[1], image_shape[0], tc_predictions.shape[1])) * np.nan
+
+    for patch_feature, x, y in zip(tc_predictions, xs, ys):
+        tissue_map[y, x, :] = patch_feature
+
+    return tissue_map, image_shape
+
+
+
+
+
+def run_TC_one_slide(wsi, mask_pt, TC, oututDir, patch_size=128, foreground_thes=0.7):
     mask_arr = np.array(Image.open(mask_pt))
-    mask_path = mask_pt.replace(".png", ".npy")
-    np.save(f"{temp}/{os.path.basename(mask_path)}", (mask_arr/255).astype("uint8"))
-        
+    mask_path = f'{oututDir}/{os.path.basename(mask_pt)}'.replace(".png", ".npy")
+    np.save(mask_path, (mask_arr/255).astype("uint8"))
+
+    print(f"start vectorising the slide!")
     time1 = time.time()
     si = SlideIterator(wsi=wsi, image_level=0, mask_path=mask_path, threshold_mask=foreground_thes)
     patch_size, _ = parse_patch_size(wsi, patch_size)
     
-    si.save_array(patch_size=patch_size, stride=patch_size, output_pattern=temp, downsample=1)
+    si.save_array(patch_size=patch_size, stride=patch_size, output_pattern=oututDir, downsample=1)
     print(f"{time.time() - time1} seconds to vectorise the slide!")
     print(f"Tissue-Classifier is predicting ...")
-    wsi_sequence = WsiNpySequence(wsi_pattern=temp, batch_size=8)
+    wsi_sequence = WsiNpySequence(wsi_pattern=oututDir, batch_size=8)
     tc_predictions = TC.predict_generator(generator=wsi_sequence, steps=len(wsi_sequence),verbose=1)
                 
     xs = wsi_sequence.xs
@@ -225,7 +319,15 @@ def run_TC_one_slide(wsi, mask_pt, TC, temp, patch_size=128, foreground_thes=0.7
     for patch_feature, x, y in zip(tc_predictions, xs, ys):
         tissue_map[y, x, :] = patch_feature
     tissue_map[np.isnan(tissue_map)] = 0
+    
+    for i in glob.glob(f"{oututDir}/*pattern*"):
+        os.remove(i)
+        print(f"{i} removed!")
+        
     return tissue_map
+
+
+
 
 
 def TC_pred(crop_norm, TC):
@@ -236,7 +338,7 @@ def TC_pred(crop_norm, TC):
 
 
 # plot the WSI TC map
-def plot_TCmap(tissue_map, require_bounds=False):
+def plot_TCmap(tissue_map, require_bounds):
     tissue_map = np.load(TC_maskpt)
     if require_bounds:
         bounds_h = int(wsi.properties['openslide.bounds-height'])//512
@@ -306,7 +408,7 @@ def get_roi_locs(mask, roi_width):
 
 
 # save a png file showing ROI overlay on the WSI
-def bbx_overlay(epi_mask, overlay_pt, roi_width):    
+def bbx_overlay(epi_mask, overlay_pt, roi_width, threshold=1):    
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(epi_mask, connectivity=8)
     
     bbx_map = np.zeros((epi_mask.shape[0], epi_mask.shape[1], 3), np.uint8)
@@ -318,7 +420,7 @@ def bbx_overlay(epi_mask, overlay_pt, roi_width):
         
         x1_inner, y1_inner, x2_inner, y2_inner, x1_outer, y1_outer, x2_outer, y2_outer = get_roi_locs(mask_i, roi_width)
         # avoid getting too large ROIs
-        if (x2_outer-x1_outer < mask_i.shape[1]//5) and (y2_outer-y1_outer < mask_i.shape[0]//5):
+        if (x2_outer-x1_outer < mask_i.shape[1]//threshold) and (y2_outer-y1_outer < mask_i.shape[0]//threshold):
             bbx_map = cv2.rectangle(bbx_map, (x1_inner, y1_inner), (x2_inner,y2_inner), (255, 0, 0), 15)
             bbx_map = cv2.rectangle(bbx_map, (x1_outer, y1_outer), (x2_outer, y2_outer), (255, 255, 0), 15)
 
@@ -330,15 +432,14 @@ def bbx_overlay(epi_mask, overlay_pt, roi_width):
 
     
 # get roi ids for all ROIs detected on the WSI
-def get_roi_ids(epi_mask, wsi_id, roi_width, upsample, wsi_mask_ratio):
+def get_roi_ids(epi_mask, wsi_id, roi_width, upsample, wsi_mask_ratio, threshold=1):
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(epi_mask, connectivity=8)
     roi_ids = []
     for i in range(1, num_labels):
         mask_i = labels == i
         _,_,_,_, x1_outer, y1_outer, x2_outer, y2_outer = get_roi_locs(mask_i, roi_width)
 
-        # avoid getting too large ROIs for NKI cohort
-        threshold = 3
+        # avoid getting too large ROIs
         if (x2_outer-x1_outer < mask_i.shape[1]//threshold) and (y2_outer-y1_outer < mask_i.shape[0]//threshold):
             x1_outer, y1_outer, x2_outer, y2_outer =x1_outer*wsi_mask_ratio, y1_outer*wsi_mask_ratio, x2_outer*wsi_mask_ratio, y2_outer*wsi_mask_ratio
             roi_id = f"{wsi_id}_{int(x1_outer)}_{int(y1_outer)}_{int(x2_outer-x1_outer)}_{int(y2_outer-y1_outer)}"
@@ -389,13 +490,50 @@ def roi_id2patch_id(roi_id, patch_size, TC_maskpt, patch_dict):
 
 
 
+def parse_roi_id(roi_id):
+    wsi_id = "_".join(roi_id.split("_")[:-4])
+    x,y,w,h = int(roi_id.split("_")[-4]), int(roi_id.split("_")[-3]), int(roi_id.split("_")[-2]), int(roi_id.split("_")[-1])
+    return wsi_id, x, y, w, h
+
+
+
+def show_roi(wsi, roi_id):
+    wsi_id, x_orig, y_orig, wid_orig, heigh_orig = parse_roi_id(roi_id)
+    roi_img = wsi.read_region((int(x_orig), int(y_orig)), 0, (int(wid_orig), int(heigh_orig))).convert("RGB")
+    im = Image.fromarray(np.array(roi_img))
+    return im
+    
+
+
+
+def parse_patch_id(patch_id):
+    _,_,_,_,grid_x,grid_y,patch_size = patch_id.split('_')[-7:]
+    orig_x = int(int(grid_x) * int(patch_size))
+    orig_y = int(int(grid_y) * int(patch_size))
+    return orig_x, orig_y, patch_size
+
+
+
+def show_patch(wsi, patch_id, save_pt = None):
+    orig_x, orig_y, patch_size = parse_patch_id(patch_id)
+    img = wsi.read_region((int(orig_x), int(orig_y)), 0, (int(patch_size), int(patch_size))).convert("RGB")
+    plt.imshow(img)
+    plt.axis('off')
+
+    if save_pt is not None:
+        Image.fromarray(np.array(img)).save(save_pt)
+    return img
+
+
+
+
 def save_patchcsv(roi_ids, patch_size, TC_maskpt, output_dir):
     patch_dict = {"roi_id": [], "patch_id": [], "cls": [], "TC_epi": [], "TC_str": [], "TC_adi": []}
     for roi_id in roi_ids:
         roi_id2patch_id(roi_id, patch_size, TC_maskpt, patch_dict)
 
     patch_df = pd.DataFrame.from_dict(patch_dict)
-    patch_df = patch_df.loc[patch_df['cls'] != "adipocytes", :]
+    # patch_df = patch_df.loc[patch_df['cls'] != "adipocytes", :]
     patch_df["cohort"] = os.path.basename(output_dir)
     patch_df["wsi_id"] = os.path.basename(output_dir)
 
@@ -406,31 +544,316 @@ def save_patchcsv(roi_ids, patch_size, TC_maskpt, output_dir):
     return patch_df
 
 
-def parse_roi_id(roi_id):
-    wsi_id = "_".join(roi_id.split("_")[:-4])
-    x,y,w,h = int(roi_id.split("_")[-4]), int(roi_id.split("_")[-3]), int(roi_id.split("_")[-2]), int(roi_id.split("_")[-1])
-    return wsi_id, x, y, w, h
+
+
+def get_keys_from_value(d, val):
+    return [k for k, v in d.items() if v == val][0]
+
+
+
+def plot_multiple(img_list, caption_list, grid_x, grid_y, figure_size, cmap, save_pt=None):
+    fig, axes = plt.subplots(grid_x, grid_y, figsize=figure_size)
+    counter = 0
+    for x in range(0, grid_x):
+        for y in range(0, grid_y):
+            axes[x][y].imshow(img_list[counter],cmap=cmap)
+            axes[x][y].axis("off")
+            axes[x][y].set_title(f"{caption_list[counter]}")
+            counter += 1
+    if save_pt is not None:
+        plt.title(os.path.basename(save_pt).split(".png")[0])
+        plt.savefig(save_pt, pad_inches=0, bbox_inches="tight")
+
+
+def plot_oneline(img_list, caption_list, figure_size, save_pt=None):
+    fig, axes = plt.subplots(1, len(img_list), figsize=figure_size)
+ 
+    for index in range(0, len(img_list)):
+            axes[index].imshow(img_list[index])
+            axes[index].axis("off")
+            caption_i = caption_list[index]
+            
+            if isinstance(caption_i, str):
+                axes[index].set_title(f"{caption_i}")
+            else:
+                axes[index].set_title(f"{np.around(caption_i, 2)}")
+    if save_pt is not None:
+        plt.savefig(save_pt,pad_inches=0, bbox_inches="tight", dpi=300)
+
+
+
+
+
+
+##########################################################################################################
+# for QuPath
+##########################################################################################################
+
+# optional save TC prediction png file -> can be imported to QuPath
+def plot_tissue_heatmap(wsi_tc_pt, patch_size, save_dir=None, require_bounds=False):
+    wsi_id = os.path.basename(wsi_tc_pt).split("_TC512_probmask")[0]
+    tissue_map = np.load(wsi_tc_pt)
+    if require_bounds:
+        bounds_h = int(wsi.properties['openslide.bounds-height'])//512
+        bounds_w = int(wsi.properties['openslide.bounds-width'])//512
+        bounds_x = int(wsi.properties['openslide.bounds-x'])//512
+        bounds_y = int(wsi.properties['openslide.bounds-y'])//512
+        tissue_map = tissue_map[bounds_y:(bounds_y+bounds_h), bounds_x:(bounds_x+bounds_w),:]
+    im = Image.fromarray((tissue_map * 255).astype("uint8"))
+    im.save(f"{save_dir}/{wsi_id}_TC_({patch_size},0,0,{tissue_map.shape[1]},{tissue_map.shape[0]}).png")
+    return tissue_map
+
+
+
+
+# select colors for QuPath visualisation
+# name: "cls", "tab10", "tab20", "Set1"
+def build_disrete_cmap(number=3):
+    if number == 3:
+        # 0:background; 1:epi; 2:stroma; 3:mixed 4: adi
+        colors = np.array([
+            [228, 26, 28],  # Red - epi
+            [77, 167, 77],  # Green - stroma
+            [128, 128, 128], # grey adipocytes
+        ]) / 255
+
+    else:
+        colors = []
+        cm = plt.get_cmap('gist_rainbow')
+        for i in range(number):
+            colors.append(cm(i//3*3.0/number))
+        colors = np.array(colors)
+
+    cmap = ListedColormap(colors, N=colors.shape[0])
+    return cmap
+
+
+
+# given tx,ty,bx,by, create polygons
+def build_poly(tx: np.ndarray, ty: np.ndarray, bx: np.ndarray, by: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    # Counter clock-wise
+    px = np.vstack((tx, bx, bx, tx)).T
+    py = np.vstack((ty, ty, by, by)).T
+    return px, py
     
 
-# save roi images
-def show_roi(wsi, roi_id):
-    wsi_id, x_orig, y_orig, wid_orig, heigh_orig = parse_roi_id(roi_id)
-    roi_img = wsi.read_region((int(x_orig), int(y_orig)), 0, (int(wid_orig), int(heigh_orig))).convert("RGB")
-    im = Image.fromarray(np.array(roi_img))
-    return im
+
+def get_json_from_map(TC_cls, cls_dict, json_pt, patch_size, require_bounds=False):
+
+    cls_df = {'orig_x': [], 'orig_y': [], 'cls': []}
+    for x in range(TC_cls.shape[1]):
+        for y in range(TC_cls.shape[0]):
+            cls_df['orig_x'].append(int(x * patch_size))
+            cls_df['orig_y'].append(int(y * patch_size))
+            cls_df['cls'].append(TC_cls[y, x])
+
+    cls_df = pd.DataFrame.from_dict(cls_df)
+    cls_df = cls_df.loc[cls_df['cls']!=3, ]
+
+    # get TC json
+    tx = np.array(cls_df['orig_x']).astype("int")
+    ty = np.array(cls_df['orig_y']).astype("int")
+    bx = np.array([i+ patch_size for i in cls_df['orig_x']]).astype("int")
+    by = np.array([i+ patch_size for i in cls_df['orig_y']]).astype("int")
+
+    if require_bounds:
+        bounds_x = int(wsi.properties['openslide.bounds-x'])
+        bounds_y = int(wsi.properties['openslide.bounds-y'])
+        tx = np.array(tx-bounds_x).astype("int")
+        ty = np.array(ty-bounds_y).astype("int")
+        bx = np.array(bx-bounds_x).astype("int")
+        by = np.array(by-bounds_y).astype("int")
+
+    names = [get_keys_from_value(cls_dict, i) for i in cls_df['cls']]
+    values = list(cls_df['cls'])
+
+    # Build shape and simplify the shapes if True
+    polys_x, polys_y = build_poly(tx=tx, ty=ty, bx=bx, by=by)
+    cmap = build_disrete_cmap(number=4)
+    
+    coords = {}
+    for i in range(len(polys_x)):
+        color = 255 * np.array(cmap(int(values[i])))[:3]
+        coords['poly{}'.format(i)] = {
+            "coords": np.vstack((polys_x[i], polys_y[i])).tolist(),
+            "class": str(names[i]), 
+            "name": str(names[i]), 
+            "color": [int(color[0]), int(color[1]), int(color[2])]
+            }
+
+    if json_pt is not None:
+        with open(json_pt, 'w') as outfile:
+            json.dump(coords, outfile)
+        print(f"{json_pt} saved!")
 
 
-def parse_patch_id(patch_id):
-    _,_,_,_,grid_x,grid_y,patch_size = patch_id.split('_')[-7:]
-    orig_x = int(int(grid_x) * int(patch_size))
-    orig_y = int(int(grid_y) * int(patch_size))
-    return orig_x, orig_y, patch_size
+
+
+
+def getROIxy(patch_id):
+    _,_,_,_,grid_x,grid_y, patch_size = patch_id.split("_")[-7:]
+    grid_x, grid_y, patch_size = int(grid_x),int(grid_y),int(patch_size)
+    x, y = grid_x * patch_size, grid_y * patch_size
+    return x, y
+
+
+def addWSIxy(df):
+    x_orig = []
+    y_orig = []
+    for i in list(df["patch_id"]):
+        x_orig_i, y_orig_i = getROIxy(i)
+        x_orig.append(x_orig_i)
+        y_orig.append(y_orig_i)
+    df["orig_x"] = x_orig
+    df["orig_y"] = y_orig
+    return df
+
+
+
+
 
     
-def show_patch(wsi, patch_id):
-    orig_x, orig_y, patch_size = parse_patch_id(patch_id)
-    img = wsi.read_region((int(orig_x), int(orig_y)), 0, (int(patch_size), int(patch_size))).convert("RGB")
-    plt.imshow(img)
+def get_json_from_ROI(cls_df, cls_dict, patch_size, json_pt, require_bounds=False):
+
+    cls_df = addWSIxy(cls_df)
+    
+    # get TC json
+    tx = np.array(cls_df['orig_x']).astype("int")
+    ty = np.array(cls_df['orig_y']).astype("int")
+    bx = np.array([i+ patch_size for i in cls_df['orig_x']]).astype("int")
+    by = np.array([i+ patch_size for i in cls_df['orig_y']]).astype("int")
+
+    if require_bounds:
+        bounds_x = int(wsi.properties['openslide.bounds-x'])
+        bounds_y = int(wsi.properties['openslide.bounds-y'])
+        tx = np.array(tx-bounds_x).astype("int")
+        ty = np.array(ty-bounds_y).astype("int")
+        bx = np.array(bx-bounds_x).astype("int")
+        by = np.array(by-bounds_y).astype("int")
+
+    names = list(cls_df['cls'])
+    values =  [cls_dict[i] for i in list(cls_df['cls'])]
+
+    # Build shape and simplify the shapes if True
+    polys_x, polys_y = build_poly(tx=tx, ty=ty, bx=bx, by=by)
+    cmap = build_disrete_cmap(number=4)
+    
+    coords = {}
+    for i in range(len(polys_x)):
+        color = 255 * np.array(cmap(int(values[i])))[:3]
+        coords['poly{}'.format(i)] = {
+            "coords": np.vstack((polys_x[i], polys_y[i])).tolist(),
+            "class": str(names[i]), 
+            "name": str(names[i]), 
+            "color": [int(color[0]), int(color[1]), int(color[2])]
+            }
+
+    if json_pt is not None:
+        with open(json_pt, 'w') as outfile:
+            json.dump(coords, outfile)
+        print(f"{json_pt} saved!")
+##########################################################################################################
+# for CAM visualisation
+##########################################################################################################
+def get_GAPCAM(img_path, model, layer='conv_pw_13_relu', label_index=None):
+    img = Image.open(img_path)
+    img = np.array(img.resize((512, 512)))
+    img = Reinhard(img)
+    input_img = np.expand_dims(img, axis=0)
+    input_img = tf.keras.applications.mobilenet.preprocess_input(input_img)
+    model_CAM = Model([model.inputs], 
+                      [model.get_layer(layer).output, 
+                       model.output])
+
+    activation_maps, predictions = model_CAM(input_img)
+    pred_prob = np.around(predictions[0],2)
+    print(pred_prob)
+
+    if label_index is None:
+        label_index = np.argmax(predictions)
+        print(label_index)
+
+    activation_maps = np.squeeze(activation_maps.numpy())
+    weights_pred = model.layers[-1].get_weights()[0]
+    weights_pred = weights_pred[:, label_index]
+    weights_dense2 = model.layers[-2].get_weights()[0]
+    weights_dense1 = model.layers[-4].get_weights()[0]
+    heatmap_weights = tf.tensordot(weights_dense2, weights_pred, axes=1)
+    heatmap_weights = tf.tensordot(weights_dense1, heatmap_weights, axes=1)
+
+    weighted_activation_maps = activation_maps.copy()
+    for i in range(weighted_activation_maps.shape[-1]):
+        weighted_activation_maps[:,:,i] *= heatmap_weights[i]
+
+    CAM = np.mean(weighted_activation_maps, axis=-1)
+    CAM = np.maximum(CAM, 0)
+    CAM /= CAM.max()
+    print(CAM.shape)
+
+    cam_heatmap = cv2.resize(CAM, (img.shape[0], img.shape[1]))
+    cam_heatmap = cam_heatmap *255
+    cam_heatmap = np.clip(cam_heatmap, 0, 255).astype(np.uint8)
+    cam_heatmap = cv2.applyColorMap(cam_heatmap, cv2.COLORMAP_VIRIDIS)
+    print(cam_heatmap.shape)
+    
+    super_imposed_cam = cv2.addWeighted(img.astype("float32"), 0.5, cam_heatmap.astype("float32"), 0.5, 0.0)
+    super_imposed_cam = super_imposed_cam.astype(np.uint8)
+    
+    return pred_prob, CAM, cam_heatmap, super_imposed_cam
+
+
+
+
+def get_gradCAM(img_path, model, last_conv_layer_name, pred_index=None):
+    img = Image.open(img_path)
+    img = np.array(img.resize((512, 512)))
+    input_img = np.expand_dims(img, axis=0)
+    input_img = tf.keras.applications.mobilenet.preprocess_input(input_img)
+
+
+    gradCAM_model = tf.keras.models.Model(
+        [model.inputs], [model.get_layer(last_conv_layer_name).output, model.output]
+    )
+
+    # compute the gradient of the top predicted class for our input image
+    # with respect to the activations of the last conv layer
+    with tf.GradientTape() as tape:
+        last_conv_layer_output, preds = gradCAM_model(input_img)
+        if pred_index is None:
+            pred_index = tf.argmax(preds[0])
+        class_channel = preds[:, pred_index]
+    print(preds)
+
+    # This is the gradient of the output neuron (top predicted or chosen)
+    # with regard to the output feature map of the last conv layer
+    grads = tape.gradient(class_channel, last_conv_layer_output)
+
+    # This is a vector where each entry is the mean intensity of the gradient
+    # over a specific feature map channel
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+
+    # We multiply each channel in the feature map array
+    # by "how important this channel is" with regard to the top predicted class
+    # then sum all the channels to obtain the heatmap class activation
+    last_conv_layer_output = last_conv_layer_output[0]
+    CAM = last_conv_layer_output @ pooled_grads[..., tf.newaxis]
+    CAM = tf.squeeze(CAM)
+
+    # For visualization purpose, we will also normalize the heatmap between 0 & 1
+    CAM = tf.maximum(CAM, 0) / tf.math.reduce_max(CAM)
+    CAM = np.array(CAM)
+    
+    cam_heatmap = cv2.resize(CAM, (img.shape[0], img.shape[1]))
+    cam_heatmap = cam_heatmap *255
+    cam_heatmap = np.clip(cam_heatmap, 0, 255).astype(np.uint8)
+    cam_heatmap = cv2.applyColorMap(cam_heatmap, cv2.COLORMAP_VIRIDIS)
+    print(cam_heatmap.shape)
+    
+    super_imposed_cam = cv2.addWeighted(img.astype("float32"), 0.5, cam_heatmap.astype("float32"), 0.5, 0.0)
+    super_imposed_cam = super_imposed_cam.astype(np.uint8)
+
+    return preds, CAM, cam_heatmap, super_imposed_cam
+
 
 
 

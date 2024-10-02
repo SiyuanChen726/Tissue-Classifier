@@ -4,7 +4,6 @@ import argparse
 
 
 parser = argparse.ArgumentParser(description="Run Tissue-Classifier to get a 3-class mask")
-parser.add_argument("--run_TC", action='store_true', help="run Tissue-Classifier")
 parser.add_argument("--save_bbxpng", action='store_true', help="whether localise perilobular regions and save a .png file")
 parser.add_argument("--save_patchcsv", action='store_true', help="whether localise perilobular regions and save a .csv file storing patches classes and coordinates")
 
@@ -32,10 +31,8 @@ args = parser.parse_args()
 
 
 if __name__ == "__main__":
-    if args.run_TC:
-        run_TC(args) 
-    if any([args.save_bbxpng, args.save_patchcsv]):
-        run_bbx(args)
+    run_TC(args) 
+    run_bbx(args)
 
 
 
